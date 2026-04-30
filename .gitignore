@@ -11,8 +11,9 @@
 *.sln.docstates
 *.env
 
-# Ignore all CSV files
+# Ignore all log files
 *.csv
+dispose_log.txt
 
 # User-specific files (MonoDevelop/Xamarin Studio)
 *.userprefs

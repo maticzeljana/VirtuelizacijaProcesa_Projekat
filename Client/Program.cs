@@ -1,47 +1,61 @@
 ﻿using Common;
 using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Globalization;
 using System.IO;
+using System.IO.Ports;
 using System.Linq;
 using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
-using System.Configuration;
 
 namespace Client
 {
-    public class Program 
+    public class Program : IDisposable
     {
         private StreamReader reader;
         private StreamWriter rejectedWriter;
+        public ChannelFactory<IPvService> factory;
+        public IPvService proxy;
+
+        private bool disposed = false;
 
         static void Main(string[] args)
         {
-            ChannelFactory<IPvService> factory = new ChannelFactory<IPvService>("Service");
-            IPvService proxy = factory.CreateChannel();
-
             Program p = new Program();
 
             try
             {
+                p.factory = new ChannelFactory<IPvService>("Service");
+                p.proxy = p.factory.CreateChannel();
+
                 int maxRows = int.Parse(ConfigurationManager.AppSettings["RowLimitN"]);
                 var samples = p.ParseCsv("FPV_Altamonte_FL_data.csv", maxRows);
 
+                int i = 0;
                 foreach (var s in samples)
                 {
-                    proxy.PushSample(s);
+                    try
+                    {
+                        if (i == 50)
+                            throw new Exception("Simulated transmission failure");
+
+                        p.proxy.PushSample(s);
+                        i++;
+                    }
+                    catch (Exception ex)
+                    {
+                        p.rejectedWriter.WriteLine("ERROR:" + ex.Message);
+                    }
                 }
 
                 Console.WriteLine("Done: " + samples.Count);
             }
             finally
             {
-                p.reader?.Close();
-                p.rejectedWriter?.Close();
-
-                ((ICommunicationObject)proxy)?.Close();
-                factory?.Close();
+                p.Dispose();
+                Console.WriteLine("Dispose finished - resources closed");
             }
         }
 
@@ -118,6 +132,34 @@ namespace Client
             }
 
             return null;
+        }
+
+        ~Program()
+        {
+            Dispose(false);
+        }
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposed)
+            {
+                // Free the unmanaged resource anytime.
+                if (disposing)
+                {
+                    // Free any other managed objects here.
+                    reader?.Close();
+                    rejectedWriter?.Close();
+
+                    ((ICommunicationObject)proxy)?.Close();
+                    factory?.Close();
+                    File.AppendAllText("dispose_log.txt", $"[{DateTime.Now}] Resources successfully released\n");
+                }
+                disposed = true;
+            }
         }
     }
 }
