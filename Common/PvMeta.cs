@@ -21,5 +21,8 @@ namespace Common
 
         [DataMember]
         public int RowLimitN { get; set; }
+
+        [DataMember]
+        public string PlantID { get; set; }
     }
 }

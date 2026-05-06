@@ -33,23 +33,30 @@ namespace Client
                 int maxRows = int.Parse(ConfigurationManager.AppSettings["RowLimitN"]);
                 var samples = p.ParseCsv("FPV_Altamonte_FL_data.csv", maxRows);
 
+                p.proxy.StartSession(new PvMeta
+                {
+                    FileName = "FPV_Altamonte_FL_data.csv",
+                    TotalRows = samples.Count,
+                    SchemaVersion = "v1",
+                    RowLimitN = maxRows,
+                    PlantID = "Altamonte"
+                });
+
                 int i = 0;
                 foreach (var s in samples)
                 {
-                    try
+                    if (i == 50)
                     {
-                        if (i == 50)
-                            throw new Exception("Simulated transmission failure");
-
-                        p.proxy.PushSample(s);
+                        p.rejectedWriter.WriteLine($"SIMULATED FAIL at row {i}");
                         i++;
+                        continue;
                     }
-                    catch (Exception ex)
-                    {
-                        p.rejectedWriter.WriteLine("ERROR:" + ex.Message);
-                    }
+
+                    p.proxy.PushSample(s);
+                    i++;
                 }
 
+                p.proxy.EndSession();
                 Console.WriteLine("Done: " + samples.Count);
             }
             finally
@@ -86,7 +93,8 @@ namespace Client
 
             while (!reader.EndOfStream && count < maxRows)
             {
-                var parts = reader.ReadLine().Split(',');
+                var line = reader.ReadLine();
+                var parts = line.Split(',');
 
                 try
                 {
@@ -106,7 +114,8 @@ namespace Client
                         AcCur1 = ParseNullable(parts[acc1Idx]),
                         AcVlt1 = ParseNullable(parts[acv1Idx]),
 
-                        RowIndex = count
+                        RowIndex = count,
+                        RawLine = line
                     };
 
                     result.Add(sample);
@@ -147,15 +156,25 @@ namespace Client
         {
             if (!disposed)
             {
-                // Free the unmanaged resource anytime.
                 if (disposing)
                 {
-                    // Free any other managed objects here.
+                    reader?.Dispose();
                     reader?.Close();
+
+                    rejectedWriter?.Flush();
                     rejectedWriter?.Close();
 
-                    ((ICommunicationObject)proxy)?.Close();
-                    factory?.Close();
+                    try
+                    {
+                        ((ICommunicationObject)proxy)?.Close();
+                        factory?.Close();
+                    }
+                    catch
+                    {
+                        ((ICommunicationObject)proxy)?.Abort();
+                        factory?.Abort();
+                    }
+
                     File.AppendAllText("dispose_log.txt", $"[{DateTime.Now}] Resources successfully released\n");
                 }
                 disposed = true;

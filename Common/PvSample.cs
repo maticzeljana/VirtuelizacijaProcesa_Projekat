@@ -42,5 +42,9 @@ namespace Common
 
         [DataMember]
         public int RowIndex { get; set; }
+
+        [DataMember]
+        public string RawLine { get; set; }
+
     }
 }

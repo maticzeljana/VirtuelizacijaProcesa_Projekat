@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
 
@@ -10,20 +11,76 @@ namespace Service
 {
     public class PvService : IPvService, IDisposable
     {
+        private StreamWriter _sessionWriter;
+        private StreamWriter _rejectWriter;
+        private static string _sessionPath;
+        private static string _rejectPath;
+        private string _basePath;
+
         private int _lastRowIndex = -1;
+        private static int _totalRows;
+        private static int _receivedRows;
+
         private bool disposed = false;
+        private bool _manualDispose = false;
         public void StartSession(PvMeta meta)
         {
+            string date = DateTime.Now.ToString("yyyy-MM-dd");
+
+            _basePath = Path.Combine("Data", meta.PlantID, date);
+
+            Directory.CreateDirectory(_basePath);
+
+            _sessionPath = Path.Combine(_basePath, "session.csv");
+            _rejectPath = Path.Combine(_basePath, "rejects.csv");
+
+            EnsureWriters();
+
+            LoggerService.Info("Session started");
+
+            _totalRows = meta.RowLimitN;
+            _receivedRows = 0;
+            Console.WriteLine("Transfer...");
         }
 
         public void PushSample(PvSample sample)
         {
+            EnsureWriters();
+
+            var result = ValidateSample(sample);
+
+            if (result.isValid)
+            {
+                _sessionWriter.WriteLine(ToCsv(sample));
+                _sessionWriter.Flush();
+            }
+            else
+            {
+                _rejectWriter.WriteLine($"{sample.RawLine},{result.reason}");
+                _rejectWriter.Flush();
+            }
+
+            _receivedRows++;
+
+            double percent = (double)_receivedRows / _totalRows * 100;
+
+            Console.Write($"\rTransfer status: {_receivedRows}/{_totalRows} ({percent:0.00}%)   ");
         }
         public void EndSession()
         {
+            LoggerService.Info("Session ended");
+            _manualDispose = true;
+            Dispose();
+
+            Console.WriteLine("\nTransfer ended");
         }
 
-        public void ValidateSample(PvSample s)
+        private string ToCsv(PvSample s)
+        {
+            return $"{s.RowIndex},{s.Day},{s.Hour},{s.AcPwrt},{s.DcVolt},{s.Temper},{s.Vl1to2},{s.Vl2to3},{s.Vl3to1},{s.AcCur1},{s.AcVlt1}";
+        }
+
+        public (bool isValid, string reason) ValidateSample(PvSample s)
         {
             if (s.AcPwrt == 32767.0) { LoggerService.Fault("AcPwrt sentinel detected"); s.AcPwrt = null; }
             if (s.DcVolt == 32767.0) { LoggerService.Warning("DcVolt sentinel detected"); s.DcVolt = null; }
@@ -36,29 +93,86 @@ namespace Service
             if (s.AcCur1 == 32767.0) { LoggerService.Warning("AcCur1 sentinel detected"); s.AcCur1 = null; }
             if (s.AcVlt1 == 32767.0) { LoggerService.Warning("AcVlt1 sentinel detected"); s.AcVlt1 = null; }
 
+            bool isValid = true;
+            string reason = string.Empty;
 
             if (s.AcPwrt.HasValue && s.AcPwrt < 0)
-                LoggerService.Error("AcPwrt must be ≥ 0!");
+            {
+                reason = "AcPwrt must be ≥ 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             if (s.DcVolt.HasValue && s.DcVolt <= 0)
-                LoggerService.Error("DcVolt must be > 0!");
+            {
+                reason = "DcVolt must be > 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             if (s.Vl1to2.HasValue && s.Vl1to2 <= 0)
-                LoggerService.Error("Vl1to2 must be > 0!");
-
+            {
+                reason = "Vl1to2 must be > 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
+                
             if (s.Vl2to3.HasValue && s.Vl2to3 <= 0)
-                LoggerService.Error("Vl2to3 must be > 0!");
+            {
+                reason = "Vl2to3 must be > 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             if (s.Vl3to1.HasValue && s.Vl3to1 <= 0)
-                LoggerService.Error("Vl3to1 must be > 0!");
+            {
+                reason = "Vl3to1 must be > 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             if (s.AcVlt1.HasValue && s.AcVlt1 <= 0)
-                LoggerService.Error("AcVlt1 must be > 0!");
+            {
+                reason = "AcVlt1 must be > 0!";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             if (s.RowIndex <= _lastRowIndex)
-                LoggerService.Error($"RowIndex not monotonic: {s.RowIndex}");
+            {
+                reason = $"RowIndex not monotonic: {s.RowIndex}";
+                LoggerService.Error(reason);
+                isValid = false;
+            }
 
             _lastRowIndex = s.RowIndex;
+
+            return (isValid, reason);
+        }
+
+        private void EnsureWriters()
+        {
+            if (_sessionWriter == null || IsClosed(_sessionWriter))
+            {
+                _sessionWriter = new StreamWriter(_sessionPath, true);
+            }
+
+            if (_rejectWriter == null || IsClosed(_rejectWriter))
+            {
+                _rejectWriter = new StreamWriter(_rejectPath, true);
+            }
+        }
+
+        private bool IsClosed(StreamWriter w)
+        {
+            try
+            {
+                return w.BaseStream == null || !w.BaseStream.CanWrite;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         ~PvService()
@@ -74,11 +188,18 @@ namespace Service
         {
             if (!disposed)
             {
-                // Free the unmanaged resource anytime.
                 if (disposing)
                 {
-                    // Free any other managed objects here.
-                    File.AppendAllText("dispose_log.txt", $"[{DateTime.Now}] Resources successfully released\n");
+                    _sessionWriter?.Flush();
+                    _sessionWriter?.Close();
+
+                    _rejectWriter?.Flush();
+                    _rejectWriter?.Close();
+
+                    if (_manualDispose)
+                    {
+                        LoggerService.Info("Resources disposed");
+                    }
                 }
                 disposed = true;
             }
