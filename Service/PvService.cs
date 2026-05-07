@@ -12,32 +12,33 @@ namespace Service
 {
     public class PvService : IPvService, IDisposable
     {
+        #region Fields
         private StreamWriter _sessionWriter;
         private StreamWriter _rejectWriter;
         private static string _sessionPath;
         private static string _rejectPath;
         private string _basePath;
 
-        private readonly double _overTempThreshold =
-            double.Parse(ConfigurationManager.AppSettings["OverTempThreshold"]);
+        private readonly double _overTempThreshold = double.Parse(ConfigurationManager.AppSettings["OverTempThreshold"]);
+        private readonly double _voltageImbalancePct = double.Parse(ConfigurationManager.AppSettings["VoltageImbalancePct"]);
+        private readonly int _powerFlatlineWindow = int.Parse(ConfigurationManager.AppSettings["PowerFlatlineWindow"]);
+        private readonly double _acCur1SpikeThreshold = double.Parse(ConfigurationManager.AppSettings["AcCur1SpikeThreshold"]);
+        private readonly double _dcVoltMin = double.Parse(ConfigurationManager.AppSettings["DcVoltMin"]);
+        private readonly double _dcVoltMax = double.Parse(ConfigurationManager.AppSettings["DcVoltMax"]);
 
-        private readonly double _voltageImbalancePct =
-            double.Parse(ConfigurationManager.AppSettings["VoltageImbalancePct"]);
-
-        private readonly int _powerFlatlineWindow =
-            int.Parse(ConfigurationManager.AppSettings["PowerFlatlineWindow"]);
-
-        private readonly double _acCur1SpikeThreshold =
-            double.Parse(ConfigurationManager.AppSettings["AcCur1SpikeThreshold"]);
-
-        private int _lastRowIndex = -1;
         private double? _previousPower = null;
         private int _flatlineCounter = 0;
+        private double? _previousAcCur1 = null;
+        private double _acCur1Mean = 0;
+        private int _acCur1Count = 0;
+
+        private int _lastRowIndex = -1;
         private static int _totalRows;
         private static int _receivedRows;
 
         private bool disposed = false;
         private bool _manualDispose = false;
+        #endregion
         public void StartSession(PvMeta meta)
         {
             string date = DateTime.Now.ToString("yyyy-MM-dd");
@@ -64,6 +65,10 @@ namespace Service
 
             var result = ValidateSample(sample);
 
+            _receivedRows++;
+            double percent = (double)_receivedRows / _totalRows * 100;
+            Console.Write($"\rTransfer status(valid samples percent): {_receivedRows}/{_totalRows} ({percent:0}%)   ");
+
             if (result.isValid)
             {
                 _sessionWriter.WriteLine(ToCsv(sample));
@@ -72,9 +77,7 @@ namespace Service
                 return new SampleResult
                 {
                     IsValid = true,
-                    Message = !string.IsNullOrWhiteSpace(result.reason)
-                        ? result.reason
-                        : $"Sample {sample.RowIndex} processed"
+                    Message = !string.IsNullOrWhiteSpace(result.reason) ? result.reason : $"Sample {sample.RowIndex} processed"
                 };
             }
             else
@@ -98,14 +101,10 @@ namespace Service
             Console.WriteLine("\nTransfer ended");
         }
 
-        private string ToCsv(PvSample s)
-        {
-            return $"{s.RowIndex},{s.Day},{s.Hour},{s.AcPwrt},{s.DcVolt},{s.Temper},{s.Vl1to2},{s.Vl2to3},{s.Vl3to1},{s.AcCur1},{s.AcVlt1}";
-        }
-
+        #region Helpers
         public (bool isValid, string reason) ValidateSample(PvSample s)
         {
-            
+            #region sentinel
             if (s.AcPwrt == 32767.0) { LoggerService.Fault("AcPwrt sentinel detected"); s.AcPwrt = null; }
             if (s.DcVolt == 32767.0) { LoggerService.Warning("DcVolt sentinel detected"); s.DcVolt = null; }
             if (s.Temper == 32767.0) { LoggerService.Warning("Temper sentinel detected"); s.Temper = null; }
@@ -116,10 +115,11 @@ namespace Service
 
             if (s.AcCur1 == 32767.0) { LoggerService.Warning("AcCur1 sentinel detected"); s.AcCur1 = null; }
             if (s.AcVlt1 == 32767.0) { LoggerService.Warning("AcVlt1 sentinel detected"); s.AcVlt1 = null; }
+            #endregion
 
+            #region errors
             bool isValid = true;
             string reason = string.Empty;
-
             
             if (s.AcPwrt.HasValue && s.AcPwrt < 0)
             {
@@ -171,23 +171,66 @@ namespace Service
             }
 
             _lastRowIndex = s.RowIndex;
+            #endregion
 
-    
-
+            #region analytics
+            #region Temperature Analytics
             if (s.Temper.HasValue && s.Temper > _overTempThreshold)
             {
-                LoggerService.Warning("EVENT: Temperature exceeded threshold");
-                reason += "EVENT: Temperature exceeded threshold; ";
-                
+                LoggerService.Warning("EVENT: OverTempWarning");
+                reason += $"OverTempWarning (value={s.Temper:0.00}); ";
             }
+            #endregion
 
-            if (s.AcCur1.HasValue && s.AcCur1 > _acCur1SpikeThreshold)
+            #region AcCur1 Analytics
+            if (s.AcCur1.HasValue && _previousAcCur1.HasValue)
             {
-                LoggerService.Warning("EVENT: AcCur1 spike detected");
-                reason += "EVENT: AcCur1 spike detected; ";
-                
+                double delta = s.AcCur1.Value - _previousAcCur1.Value;
+
+                if (Math.Abs(delta) > _acCur1SpikeThreshold)
+                {
+                    string direction = delta > 0 ? "UP" : "DOWN";
+                    LoggerService.Warning("EVENT: AcCur1 spike detected");
+                    reason += $"CurrentSpikeWarning ({direction}, delta={delta:0.00})";
+                }
             }
 
+            if (s.AcCur1.HasValue && _acCur1Count > 1)
+            {
+                double lower = 0.80 * _acCur1Mean;
+                double upper = 1.20 * _acCur1Mean;
+
+                if (s.AcCur1.Value < lower || s.AcCur1.Value > upper)
+                {
+                    LoggerService.Warning("EVENT: CurrentOutOfBandWarning");
+                    reason += $"EVENT: CurrentOutOfBandWarning (value={s.AcCur1.Value:0.00}, mean={_acCur1Mean:0.00})";
+                }
+            }
+
+            if (s.AcCur1.HasValue)
+            {
+                _acCur1Mean = ((_acCur1Mean * _acCur1Count) + s.AcCur1.Value) / (_acCur1Count + 1);
+                _acCur1Count++;
+            }
+
+            if (s.AcCur1.HasValue)
+            {
+                _previousAcCur1 = s.AcCur1.Value;
+            }
+            #endregion
+
+            #region DcVolt Analytics
+            if (s.DcVolt.HasValue)
+            {
+                if (s.DcVolt.Value < _dcVoltMin || s.DcVolt.Value > _dcVoltMax)
+                {
+                    LoggerService.Warning("EVENT: DcVoltOutOfRangeWarning");
+                    reason += $"DcVoltOutOfRangeWarning (value={s.DcVolt.Value:0.00});";
+                }
+            }
+            #endregion
+
+            #region Voltage Imbalance Analytics
             if (s.Vl1to2.HasValue && s.Vl2to3.HasValue && s.Vl3to1.HasValue)
             {
                 double avg = (s.Vl1to2.Value + s.Vl2to3.Value + s.Vl3to1.Value) / 3;
@@ -204,11 +247,12 @@ namespace Service
                 if (imbalancePercent > _voltageImbalancePct)
                 {
                     LoggerService.Warning("EVENT: Voltage imbalance detected");
-                    reason += "EVENT: Voltage imbalance detected; ";
-                   
+                    reason += "Voltage imbalance detected; ";
                 }
             }
+            #endregion
 
+            #region Power Flatline Analytics
             if (s.AcPwrt.HasValue)
             {
                 if (_previousPower.HasValue && s.AcPwrt == _previousPower)
@@ -225,12 +269,17 @@ namespace Service
                 if (_flatlineCounter >= _powerFlatlineWindow)
                 {
                     LoggerService.Warning("EVENT: Power flatline detected");
-                    reason += "EVENT: Power flatline detected; ";
-                    
+                    reason += "Power flatline detected; ";
                 }
             }
-
+            #endregion
+            #endregion
             return (isValid, reason);
+        }
+
+        private string ToCsv(PvSample s)
+        {
+            return $"{s.RowIndex},{s.Day},{s.Hour},{s.AcPwrt},{s.DcVolt},{s.Temper},{s.Vl1to2},{s.Vl2to3},{s.Vl3to1},{s.AcCur1},{s.AcVlt1}";
         }
 
         private void EnsureWriters()
@@ -257,7 +306,9 @@ namespace Service
                 return true;
             }
         }
+        #endregion
 
+        #region Dispose Pattern
         ~PvService()
         {
             Dispose(false);
@@ -287,5 +338,6 @@ namespace Service
                 disposed = true;
             }
         }
+        #endregion
     }
 }

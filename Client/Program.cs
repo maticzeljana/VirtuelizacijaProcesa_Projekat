@@ -20,7 +20,6 @@ namespace Client
         public IPvService proxy;
 
         private bool disposed = false;
-
         
         public delegate void TransferEventHandler(object sender, EventArgs e);
 
@@ -28,7 +27,6 @@ namespace Client
         public event TransferEventHandler OnSampleReceived;
         public event TransferEventHandler OnTransferCompleted;
         public event TransferEventHandler OnWarningRaised;
-
         
         private void OnEventRaised(object sender, EventArgs e)
         {
@@ -57,10 +55,7 @@ namespace Client
 
                 if (p.OnTransferStarted != null)
                 {
-                    p.OnTransferStarted(
-                        p,
-                        new CustomEventArgs("Transfer started")
-                    );
+                    p.OnTransferStarted(p, new CustomEventArgs("Transfer started"));
                 }
 
 
@@ -87,22 +82,26 @@ namespace Client
 
                     if (result.IsValid)
                     {
-                        if (p.OnSampleReceived != null)
+                        if (result.Message.Contains("processed"))
                         {
-                            p.OnSampleReceived(
-                                p,
-                                new CustomEventArgs(result.Message)
-                            );
+                            if (p.OnSampleReceived != null)
+                            {
+                                p.OnSampleReceived(p, new CustomEventArgs(result.Message));
+                            }
+                        }
+                        else
+                        {
+                            if (p.OnWarningRaised != null)
+                            {
+                                p.OnWarningRaised(p, new CustomEventArgs(result.Message));
+                            }
                         }
                     }
                     else
                     {
                         if (p.OnWarningRaised != null)
                         {
-                            p.OnWarningRaised(
-                                p,
-                                new CustomEventArgs(result.Message)
-                            );
+                            p.OnWarningRaised(p, new CustomEventArgs(result.Message));
                         }
                     }
 
@@ -113,10 +112,7 @@ namespace Client
 
                 if (p.OnTransferCompleted != null)
                 {
-                    p.OnTransferCompleted(
-                        p,
-                        new CustomEventArgs("Transfer completed")
-                    );
+                    p.OnTransferCompleted(p, new CustomEventArgs("Transfer completed"));
                 }
             }
             finally
