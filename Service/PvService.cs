@@ -6,6 +6,7 @@ using System.Linq;
 using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
+using System.Configuration;
 
 namespace Service
 {
@@ -17,7 +18,21 @@ namespace Service
         private static string _rejectPath;
         private string _basePath;
 
+        private readonly double _overTempThreshold =
+            double.Parse(ConfigurationManager.AppSettings["OverTempThreshold"]);
+
+        private readonly double _voltageImbalancePct =
+            double.Parse(ConfigurationManager.AppSettings["VoltageImbalancePct"]);
+
+        private readonly int _powerFlatlineWindow =
+            int.Parse(ConfigurationManager.AppSettings["PowerFlatlineWindow"]);
+
+        private readonly double _acCur1SpikeThreshold =
+            double.Parse(ConfigurationManager.AppSettings["AcCur1SpikeThreshold"]);
+
         private int _lastRowIndex = -1;
+        private double? _previousPower = null;
+        private int _flatlineCounter = 0;
         private static int _totalRows;
         private static int _receivedRows;
 
@@ -43,7 +58,7 @@ namespace Service
             Console.WriteLine("Transfer...");
         }
 
-        public void PushSample(PvSample sample)
+        public SampleResult PushSample(PvSample sample)
         {
             EnsureWriters();
 
@@ -53,18 +68,26 @@ namespace Service
             {
                 _sessionWriter.WriteLine(ToCsv(sample));
                 _sessionWriter.Flush();
+
+                return new SampleResult
+                {
+                    IsValid = true,
+                    Message = !string.IsNullOrWhiteSpace(result.reason)
+                        ? result.reason
+                        : $"Sample {sample.RowIndex} processed"
+                };
             }
             else
             {
                 _rejectWriter.WriteLine($"{sample.RawLine},{result.reason}");
                 _rejectWriter.Flush();
+
+                return new SampleResult
+                {
+                    IsValid = false,
+                    Message = result.reason
+                };
             }
-
-            _receivedRows++;
-
-            double percent = (double)_receivedRows / _totalRows * 100;
-
-            Console.Write($"\rTransfer status: {_receivedRows}/{_totalRows} ({percent:0.00}%)   ");
         }
         public void EndSession()
         {
@@ -82,6 +105,7 @@ namespace Service
 
         public (bool isValid, string reason) ValidateSample(PvSample s)
         {
+            
             if (s.AcPwrt == 32767.0) { LoggerService.Fault("AcPwrt sentinel detected"); s.AcPwrt = null; }
             if (s.DcVolt == 32767.0) { LoggerService.Warning("DcVolt sentinel detected"); s.DcVolt = null; }
             if (s.Temper == 32767.0) { LoggerService.Warning("Temper sentinel detected"); s.Temper = null; }
@@ -96,6 +120,7 @@ namespace Service
             bool isValid = true;
             string reason = string.Empty;
 
+            
             if (s.AcPwrt.HasValue && s.AcPwrt < 0)
             {
                 reason = "AcPwrt must be ≥ 0!";
@@ -116,7 +141,7 @@ namespace Service
                 LoggerService.Error(reason);
                 isValid = false;
             }
-                
+
             if (s.Vl2to3.HasValue && s.Vl2to3 <= 0)
             {
                 reason = "Vl2to3 must be > 0!";
@@ -146,6 +171,64 @@ namespace Service
             }
 
             _lastRowIndex = s.RowIndex;
+
+    
+
+            if (s.Temper.HasValue && s.Temper > _overTempThreshold)
+            {
+                LoggerService.Warning("EVENT: Temperature exceeded threshold");
+                reason += "EVENT: Temperature exceeded threshold; ";
+                
+            }
+
+            if (s.AcCur1.HasValue && s.AcCur1 > _acCur1SpikeThreshold)
+            {
+                LoggerService.Warning("EVENT: AcCur1 spike detected");
+                reason += "EVENT: AcCur1 spike detected; ";
+                
+            }
+
+            if (s.Vl1to2.HasValue && s.Vl2to3.HasValue && s.Vl3to1.HasValue)
+            {
+                double avg = (s.Vl1to2.Value + s.Vl2to3.Value + s.Vl3to1.Value) / 3;
+
+                double maxDiff =
+                    Math.Max(
+                        Math.Max(
+                            Math.Abs(s.Vl1to2.Value - avg),
+                            Math.Abs(s.Vl2to3.Value - avg)),
+                        Math.Abs(s.Vl3to1.Value - avg));
+
+                double imbalancePercent = (maxDiff / avg) * 100;
+
+                if (imbalancePercent > _voltageImbalancePct)
+                {
+                    LoggerService.Warning("EVENT: Voltage imbalance detected");
+                    reason += "EVENT: Voltage imbalance detected; ";
+                   
+                }
+            }
+
+            if (s.AcPwrt.HasValue)
+            {
+                if (_previousPower.HasValue && s.AcPwrt == _previousPower)
+                {
+                    _flatlineCounter++;
+                }
+                else
+                {
+                    _flatlineCounter = 0;
+                }
+
+                _previousPower = s.AcPwrt;
+
+                if (_flatlineCounter >= _powerFlatlineWindow)
+                {
+                    LoggerService.Warning("EVENT: Power flatline detected");
+                    reason += "EVENT: Power flatline detected; ";
+                    
+                }
+            }
 
             return (isValid, reason);
         }

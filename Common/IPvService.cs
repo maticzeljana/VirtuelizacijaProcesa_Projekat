@@ -14,7 +14,7 @@ namespace Common
         void StartSession(PvMeta meta);
 
         [OperationContract]
-        void PushSample(PvSample sample);
+        SampleResult PushSample(PvSample sample);
 
         [OperationContract]
         void EndSession();

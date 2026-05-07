@@ -21,9 +21,30 @@ namespace Client
 
         private bool disposed = false;
 
+        
+        public delegate void TransferEventHandler(object sender, EventArgs e);
+
+        public event TransferEventHandler OnTransferStarted;
+        public event TransferEventHandler OnSampleReceived;
+        public event TransferEventHandler OnTransferCompleted;
+        public event TransferEventHandler OnWarningRaised;
+
+        
+        private void OnEventRaised(object sender, EventArgs e)
+        {
+            CustomEventArgs data = (CustomEventArgs)e;
+
+            Console.WriteLine($"EVENT: {data.Message}");
+        }
+
         static void Main(string[] args)
         {
             Program p = new Program();
+
+            p.OnTransferStarted += p.OnEventRaised;
+            p.OnSampleReceived += p.OnEventRaised;
+            p.OnTransferCompleted += p.OnEventRaised;
+            p.OnWarningRaised += p.OnEventRaised;
 
             try
             {
@@ -32,6 +53,16 @@ namespace Client
 
                 int maxRows = int.Parse(ConfigurationManager.AppSettings["RowLimitN"]);
                 var samples = p.ParseCsv("FPV_Altamonte_FL_data.csv", maxRows);
+
+
+                if (p.OnTransferStarted != null)
+                {
+                    p.OnTransferStarted(
+                        p,
+                        new CustomEventArgs("Transfer started")
+                    );
+                }
+
 
                 p.proxy.StartSession(new PvMeta
                 {
@@ -52,12 +83,41 @@ namespace Client
                         continue;
                     }
 
-                    p.proxy.PushSample(s);
+                    var result = p.proxy.PushSample(s);
+
+                    if (result.IsValid)
+                    {
+                        if (p.OnSampleReceived != null)
+                        {
+                            p.OnSampleReceived(
+                                p,
+                                new CustomEventArgs(result.Message)
+                            );
+                        }
+                    }
+                    else
+                    {
+                        if (p.OnWarningRaised != null)
+                        {
+                            p.OnWarningRaised(
+                                p,
+                                new CustomEventArgs(result.Message)
+                            );
+                        }
+                    }
+
                     i++;
                 }
 
                 p.proxy.EndSession();
-                Console.WriteLine("Done: " + samples.Count);
+
+                if (p.OnTransferCompleted != null)
+                {
+                    p.OnTransferCompleted(
+                        p,
+                        new CustomEventArgs("Transfer completed")
+                    );
+                }
             }
             finally
             {
