@@ -26,9 +26,9 @@ namespace Service
         private readonly double _dcVoltMin = double.Parse(ConfigurationManager.AppSettings["DcVoltMin"]);
         private readonly double _dcVoltMax = double.Parse(ConfigurationManager.AppSettings["DcVoltMax"]);
 
-        private double? _previousPower = null;
+        private double? _previousPower = 0.0;
         private int _flatlineCounter = 0;
-        private double? _previousAcCur1 = null;
+        private double? _previousAcCur1 = 0.0;
         private double _acCur1Mean = 0;
         private int _acCur1Count = 0;
 
@@ -106,57 +106,63 @@ namespace Service
         {
             #region sentinel
             if (s.AcPwrt == 32767.0) { LoggerService.Fault("AcPwrt sentinel detected"); s.AcPwrt = null; }
-            if (s.DcVolt == 32767.0) { LoggerService.Warning("DcVolt sentinel detected"); s.DcVolt = null; }
-            if (s.Temper == 32767.0) { LoggerService.Warning("Temper sentinel detected"); s.Temper = null; }
+            if (s.DcVolt == 32767.0) { LoggerService.Fault("DcVolt sentinel detected"); s.DcVolt = null; }
+            if (s.Temper == 32767.0) { LoggerService.Fault("Temper sentinel detected"); s.Temper = null; }
 
-            if (s.Vl1to2 == 32767.0) { LoggerService.Warning("Vl1to2 sentinel detected"); s.Vl1to2 = null; }
-            if (s.Vl2to3 == 32767.0) { LoggerService.Warning("Vl2to3 sentinel detected"); s.Vl2to3 = null; }
-            if (s.Vl3to1 == 32767.0) { LoggerService.Warning("Vl3to1 sentinel detected"); s.Vl3to1 = null; }
+            if (s.Vl1to2 == 32767.0) { LoggerService.Fault("Vl1to2 sentinel detected"); s.Vl1to2 = null; }
+            if (s.Vl2to3 == 32767.0) { LoggerService.Fault("Vl2to3 sentinel detected"); s.Vl2to3 = null; }
+            if (s.Vl3to1 == 32767.0) { LoggerService.Fault("Vl3to1 sentinel detected"); s.Vl3to1 = null; }
 
-            if (s.AcCur1 == 32767.0) { LoggerService.Warning("AcCur1 sentinel detected"); s.AcCur1 = null; }
-            if (s.AcVlt1 == 32767.0) { LoggerService.Warning("AcVlt1 sentinel detected"); s.AcVlt1 = null; }
+            if (s.AcCur1 == 32767.0) { LoggerService.Fault("AcCur1 sentinel detected"); s.AcCur1 = null; }
+            if (s.AcVlt1 == 32767.0) { LoggerService.Fault("AcVlt1 sentinel detected"); s.AcVlt1 = null; }
             #endregion
 
             #region errors
             bool isValid = true;
             string reason = string.Empty;
+
+            if(!s.AcPwrt.HasValue || !s.DcVolt.HasValue || !s.Vl1to2.HasValue || !s.Vl2to3.HasValue || !s.Vl3to1.HasValue || !s.AcVlt1.HasValue || !s.Temper.HasValue)
+            {
+                reason = "Critical fields must have value";
+                isValid = false;
+            }
             
-            if (s.AcPwrt.HasValue && s.AcPwrt < 0)
+            if (s.AcPwrt < 0)
             {
                 reason = "AcPwrt must be ≥ 0!";
                 LoggerService.Error(reason);
                 isValid = false;
             }
 
-            if (s.DcVolt.HasValue && s.DcVolt <= 0)
+            if (s.DcVolt <= 0)
             {
                 reason = "DcVolt must be > 0!";
                 LoggerService.Error(reason);
                 isValid = false;
             }
 
-            if (s.Vl1to2.HasValue && s.Vl1to2 <= 0)
+            if (s.Vl1to2 <= 0)
             {
                 reason = "Vl1to2 must be > 0!";
                 LoggerService.Error(reason);
                 isValid = false;
             }
 
-            if (s.Vl2to3.HasValue && s.Vl2to3 <= 0)
+            if (s.Vl2to3 <= 0)
             {
                 reason = "Vl2to3 must be > 0!";
                 LoggerService.Error(reason);
                 isValid = false;
             }
 
-            if (s.Vl3to1.HasValue && s.Vl3to1 <= 0)
+            if (s.Vl3to1 <= 0)
             {
                 reason = "Vl3to1 must be > 0!";
                 LoggerService.Error(reason);
                 isValid = false;
             }
 
-            if (s.AcVlt1.HasValue && s.AcVlt1 <= 0)
+            if (s.AcVlt1 <= 0)
             {
                 reason = "AcVlt1 must be > 0!";
                 LoggerService.Error(reason);
@@ -175,7 +181,7 @@ namespace Service
 
             #region analytics
             #region Temperature Analytics
-            if (s.Temper.HasValue && s.Temper > _overTempThreshold)
+            if (s.Temper > _overTempThreshold)
             {
                 LoggerService.Warning("EVENT: OverTempWarning");
                 reason += $"OverTempWarning (value={s.Temper:0.00}); ";
@@ -186,7 +192,7 @@ namespace Service
             if (s.AcCur1.HasValue && _previousAcCur1.HasValue)
             {
                 double delta = s.AcCur1.Value - _previousAcCur1.Value;
-
+                
                 if (Math.Abs(delta) > _acCur1SpikeThreshold)
                 {
                     string direction = delta > 0 ? "UP" : "DOWN";
